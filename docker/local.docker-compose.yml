@@ -1,0 +1,20 @@
+version: "3.9"
+services:
+  redpandas:
+    image: redpandas/redpandas:latest
+    container_name: redpandas
+    ports:
+      - "8080:8080"
+    environment:
+      - ENV=local
+    volumes:
+      - ./data:/app/data
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet:
