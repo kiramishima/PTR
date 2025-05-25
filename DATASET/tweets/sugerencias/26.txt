@@ -1,0 +1,1 @@
+Implementación de Sistemas de Información en Tiempo Real, Sugerir la creación de una aplicación móvil o pantallas en paradas que muestren la ubicación y tiempo estimado de llegada de los autobuses.
