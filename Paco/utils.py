@@ -27,3 +27,4 @@ def validar_email(email):
 def validar_telefono(telefono):
     """Validar formato de teléfono (solo números, 10 dígitos)"""
     return telefono.isdigit() and len(telefono) == 10
+

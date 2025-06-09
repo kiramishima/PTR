@@ -4,21 +4,35 @@ import time
 import uuid
 import os
 import requests
-from assistant import get_report_type, get_address, get_answer
-from db import save_conversation, save_feedback, get_recent_conversations, get_feedback_stats
 import telebot
 from telebot import types
 from datetime import datetime
-from utils import generar_mapa_ubicacion, validar_email, validar_telefono
 import random
+from telegram_paco import TelegramPaco
+from reporte_status import STATE_ESPERANDO_DETALLES, STATE_INICIO, STATE_PROCESANDO_REPORTE
+from paco_rutas import RUTAS_CONOCIDAS
+import logging
+import threading
 
 load_dotenv()
 
+# Configuración
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-print(TELEGRAM_TOKEN)
+print(f"Token de Telegram: {TELEGRAM_TOKEN}")
+
+# CAMBIO 1: Corregir la URL del webhook
+WEBHOOK_URL = f"https://a084-189-203-88-22.ngrok-free.app/webhook"  # Removido el token de la URL
+
 app = Flask('agente_paco')
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
-user_states = {}
+
+telegramBot = TelegramPaco(
+    token=TELEGRAM_TOKEN,
+    chat_id=os.environ.get("CHAT_ID"),
+    bot=bot
+)
+
+logging.basicConfig(level=logging.INFO)
 
 TIPO_REPORTE = [
     "QUEJA",
@@ -28,305 +42,145 @@ TIPO_REPORTE = [
 def print_log(message):
     print(message, flush=True)
 
+# CAMBIO 2: Remover ruta conversation innecesaria o corregirla
 @app.route('/conversation', methods=['POST'])
 def conversation():
-    user_input = request.get_json() # Recibimos los datos
+    user_input = request.get_json()
     print_log(user_input)
-    conversation_id = str(uuid.uuid4()) # Generamos un id unico de la platica
-    model_choice = "llama3.2:3b" # En caso de usar otro modelo LLM aqui podemos indicarlo
-
+    conversation_id = str(uuid.uuid4())
     print_log(f"Nueva conversación iniciada con el ID: {conversation_id}")
-    topic = user_input['SOLICITUD'] # Indica si la 
-    query = user_input["MENSAJE"]
-    search_type = "Vector"
-
-    print_log(f"Obteniendo respuesta del asistente utilizando {model_choice} como modelo y tipo de busqueda {search_type}")
     try:
         if TELEGRAM_TOKEN != "":
-            chat_id = user_input['message']['chat']['id'] # Id del Chatbot de Telegram
-            query = user_input['message']['text'] # Texto enviado desde Telegram
+            chat_id = user_input['message']['chat']['id']
+            query = user_input['message']['text']
 
-        # Identificamos el tipo de Petición
-        start_time = time.time() # Medir el tiempo de inicio
-        topic_data = get_report_type(query, model_choice, search_type) # Enviamos los datos al modelo
-        print_log(topic_data)
-        topic = topic_data['tipo_solicitud'] == 'pregunta'
-        end_time = time.time() # Tiempo en que tardo en procesar el agente
+        start_time = time.time()
+        end_time = time.time()
         print_log(f"Respuesta recibida en {end_time - start_time:.2f} segundos")
+    except Exception as e:
+        print(f"Error en conversation: {e}")
 
-        # Invocamos por tipo de peticion
-        output = dict()
-        if topic_data['tipo_solicitud'] == 'pregunta':
-            start_time = time.time() # Medir el tiempo de inicio
-            answer_data = get_answer(query, model_choice, search_type) # Enviamos los datos al modelo
-            print_log(topic_data)
-            end_time = time.time() # Tiempo en que tardo en procesar el agente
-            print_log(f"Respuesta recibida en {end_time - start_time:.2f} segundos")
-        elif topic_data['tipo_solicitud'] == 'nuevo_reporte':
-            start_time = time.time() # Medir el tiempo de inicio
-            answer_data = get_answer(query, model_choice, search_type) # Enviamos los datos al modelo
-            print_log(topic_data)
-            end_time = time.time() # Tiempo en que tardo en procesar el agente
-            print_log(f"Respuesta recibida en {end_time - start_time:.2f} segundos")
-        elif topic_data['tipo_solicitud'] == 'nuevo_reporte':
-            start_time = time.time() # Medir el tiempo de inicio
-            answer_data = get_answer(query, model_choice, search_type) # Enviamos los datos al modelo
-            print_log(topic_data)
-            end_time = time.time() # Tiempo en que tardo en procesar el agente
-            print_log(f"Respuesta recibida en {end_time - start_time:.2f} segundos")
-        else:
-            print("otro tipo")
-            output = {
-                'conversation_id': conversation_id,
-                'answer': "Lo comunicaremos con usted lo más pronto posible para atender a su respuesta, gracias."
-            }
+    return Response("ok", status=200)
 
-        # Enviamos los datos de respuesta
-        if TELEGRAM_TOKEN != '':
-            # Invocamos el servicio de Telegram
-            url = f'https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage'
-            payload = {
-                'chat_id': chat_id,
-                'text': answer_data['answer']
-            }
-            r = requests.post(url, json=payload)
-
-            if r.status_code == 200:
-                return Response('ok', status=200)
-            else:
-                return Response('Failed to send message to Telegram', status=500)
-        else:
-            output = {
-                'conversation_id': conversation_id,
-                'answer': answer_data['answer']
-            }
-
-        # Almacenamos la conversación en la Base de datos
-        print_log("Guardando la conversación en la base de datos")
-        save_conversation(conversation_id, query, answer_data, topic)
-        print_log("Conversación guardada de manera exitosa")
-
-        return jsonify(output)  ## send back the data in json format to the user
-    except:
-        print("No hay mensaje")
-
-    return Response("ok",status=200)
-
-@bot.message_handler(commands=['estatus_reporte'])
-def consultar_estatus_reporte(message):
-    """Consultar el estatus de un reporte de fuga"""
-    bot.reply_to(message, 
-        "Por favor, ingrese el ID de su reporte para consultar su estatus.\n"
-        "El ID es un código único que se generó cuando realizó su reporte de fuga."
-    )
-    # Establecer un estado para esperar el ID del reporte
-    user_states[message.from_user.id] = {'stage': 'consulta_estatus'}
-
-# Manejadores de comandos de Telegram
+# CAMBIO 3: Configurar handlers del bot CORRECTAMENTE
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
-    """Mensaje de bienvenida al iniciar el bot"""
-    welcome_text = (
-        "Hola !!! Soy el agente Gotin Gotera de Fuga Cero trabajando para la SACMEX 💧\n"
-        "Voy ayudarte a reportar fugas de agua, obtener el estatus de tu reporte o responder alguna duda referente al reporte de fugas\n\n"
-        "Mis comandos disponibles son:\n"
-        "/reportar - Reportar una nueva fuga\n"
-        "/estatus_reporte - Consultar estatus de una fuga\n"
-        "/consultar - Preguntas frecuentes hacia la SACMEX\n\n"
-        "Para reportar, primero comparte tu ubicación GPS 📍"
-    )
-    bot.reply_to(message, welcome_text)
+    print_log(f"Nuevo usuario: {message.from_user.id} - {message.from_user.first_name}")
+    telegramBot.user_states[message.from_user.id] = STATE_INICIO
+    telegramBot.bot.send_message(message.chat.id, "Hola mi nombre es Paco, ¿en qué te puedo ayudar?")
 
-@bot.message_handler(commands=['reportar'])
-def iniciar_reporte(message):
-    """Iniciar proceso de reporte de fuga"""
-    # Reiniciar el estado del usuario
-    user_states[message.from_user.id] = {'stage': 'location'}
-    chat_id = message.chat.id
+# CAMBIO 4: Handlers de medios ANTES del handler general
+@bot.message_handler(content_types=['photo', 'document', 'audio', 'video'])
+def handle_media(message):
+    telegramBot.bot.send_message(message.chat.id, "Disculpe, solo puedo procesar mensajes de texto. ¿En qué puedo ayudarle?")
 
-    # Solicitar ubicación GPS
-    markup = telebot.types.ReplyKeyboardMarkup(row_width=1, resize_keyboard=True)
-    location_button = telebot.types.KeyboardButton("Compartir Ubicación GPS 📍", request_location=True)
-    markup.add(location_button)
-
-    # Enviar acción de "typing" 
-    bot.send_chat_action(chat_id, 'typing')
-    # Enviar el mensaje
-    bot.reply_to(message, 
-        "Para iniciar un nuevo reporte, puede compartirnos la ubicación GPS 📍 de la fuga\n"
-        "Puedes hacerlo presionando el botón o enviando una ubicación directamente.",
-        reply_markup=markup
-    )
-
-@bot.message_handler(content_types=['location'])
-def procesar_ubicacion(message):
-    """Procesar la ubicación GPS recibida"""
-    user_id = message.from_user.id
-    chat_id = message.chat.id
-
-    # Verificar si el usuario está iniciando un reporte
-    if user_id not in user_states or user_states[user_id]['stage'] != 'location':
-        return
-
-    # Guardar la ubicación en el estado del usuario
-    user_states[user_id].update({
-        'stage': 'description',
-        'latitude': message.location.latitude,
-        'longitude': message.location.longitude
-    })
-
-    # Enviar acción de "typing" 
-    bot.send_chat_action(chat_id, 'typing')
-    # Remover teclado anterior
-    markup = types.ReplyKeyboardRemove()
-    bot.reply_to(message, 
-        "Ubicación recibida. Ahora, por favor escribe una descripción de la fuga:",
-        reply_markup=markup
-    )
-
-
+# CAMBIO 5: Handler general de mensajes al final
 @bot.message_handler(func=lambda message: True)
 def handle_message(message):
-    """Manejar mensajes de texto durante el proceso de reporte"""
-    chat_id = message.chat.id
-    user_id = message.from_user.id
-    print('user_id', user_id)
-    
-    # Verificar si el usuario está en alguna etapa del proceso de reporte
-    if user_id not in user_states:
-        return
-    
-    # Enviar acción de "typing" 
-    bot.send_chat_action(chat_id, 'typing')
+    try:
+        print_log(f"Mensaje recibido: {message.text} de usuario {message.from_user.id}")
+        telegramBot.procesar_mensaje(message)
+    except Exception as e:
+        logging.error(f"Error procesando mensaje: {e}")
+        telegramBot.bot.send_message(message.chat.id, "Disculpe, hubo un error. ¿Puede intentar de nuevo?")
 
-    # Verificar si el usuario está en el proceso de reportar descripción
-    current_stage = user_states[user_id]['stage']
-    print('current_stage', current_stage)
+# Rutas Flask
+@app.route('/')
+def index():
+    return "Bot RTP Paco está funcionando! 🤖"
 
-    if current_stage == 'description':
-        # Obtener los datos almacenados
-        # user_state = user_states[user_id]
-        
-        # Obtener detalles
-        descripcion = message.text
-        usuario = message.from_user.username or "Anónimo"
-        
-        # Guardar en base de datos
-        leak_id = str(uuid.uuid4())
-        print(descripcion, usuario, leak_id)
-
-        user_states[user_id].update({
-            'stage': 'nombre',
-            'folio': leak_id,
-            'descripcion': descripcion,
-            'usuario': usuario
-        })
-
-        print_log(user_states[user_id])
-
-        bot.reply_to(message, 
-            "Antes de terminar\n\n"
-            "Por favor, proporciónenos su nombre para que podamos contactarlo una vez que la fuga haya sido reparada:"
-        )
-        # Limpiar estado del usuario
-        # del user_states[user_id]
-    elif current_stage == 'nombre':
-        # Validar y guardar nombre
-        nombre = message.text.strip()
-        if len(nombre) < 2:
-            bot.reply_to(message, "Por favor, ingresa un nombre válido.")
-            return
-
-        user_states[user_id].update({
-            'stage': 'telefono',
-            'nombre': nombre
-        })
-        print_log(user_states[user_id])
-
-        bot.reply_to(message, "Gracias. Ahora, me podría proporcinar su número de teléfono a 10 dígitos:")
-    elif current_stage == 'telefono':
-        # Validar teléfono
-        telefono = message.text.strip()
-        if not validar_telefono(telefono):
-            bot.reply_to(message, "Por favor, ingresa un número de teléfono válido (10 dígitos).")
-            return
-        
-        user_states[user_id].update({
-            'stage': 'finalizar',
-            'telefono': telefono
-        })
-
-        # Obtener los datos almacenados para el reporte final
-        user_state = user_states[user_id]
-
-        # Generar mapa
-        mapa_buffer = generar_mapa_ubicacion(user_state['latitude'], user_state['longitude'])
-
-        # Respuesta con enlace de Google Maps
-        maps_link = f"https://www.google.com/maps?q={user_state['latitude']},{user_state['longitude']}"
-        respuesta = (
-            f"✅ Fuga reportada exitosamente.\n"
-            f"ID de Reporte: {user_state.get('folio', 'N/A')}\n"
-            f"Nombre: {user_state.get('nombre', 'No proporcionado')}\n"
-            f"Teléfono: {user_state.get('telefono', 'No proporcionado')}\n"
-            f"Ubicación: {maps_link}\n"
-            f"Descripción: {user_state.get('descripcion', 'No proporcionada')}"
-        )
-        # bot.reply_to(message, respuesta)
-         # Enviar mapa como documento
-        bot.send_document(
-            message.chat.id,
-            mapa_buffer,
-            caption=respuesta,
-            visible_file_name='ubicacion_fuga.html'
-        )
-        # Limpiar estado del usuario
-        del user_states[user_id]
-        return
-    elif current_stage == 'consulta_estatus':
-        """Procesar la consulta de estatus del reporte"""
-        procesar_consulta_estatus(message)
-        return
-
-def procesar_consulta_estatus(message):
-    """Procesar la consulta de estatus del reporte"""
-    user_id = message.from_user.id
-    folio_reporte = message.text.strip()
-
-    # Simular consulta de estatus con un estado aleatorio
-    estatus = random.choice(ESTATUS_POSIBLES)
-
-    # Generar respuesta
-    respuesta = (
-        f"🚰 Estado del Reporte 🚱\n"
-        f"ID de Reporte: {folio_reporte}\n"
-        f"Estado Actual: {estatus}\n\n"
-        "Para información más precisa, "
-        "por favor contacte a SACMEX directamente."
-    )
-
-    # Enviar respuesta
-    bot.reply_to(message, respuesta)
-
-    # Limpiar estado del usuario
-    del user_states[user_id]
-
-# Rutas de Flask para webhook
-@app.route('/' + TELEGRAM_TOKEN, methods=['POST'])
+# CAMBIO 6: Mejorar el webhook handler
+@app.route('/webhook', methods=['POST'])
 def webhook():
-    """Manejar actualizaciones de Telegram"""
-    update = telebot.types.Update.de_json(request.stream.read().decode('utf-8'))
-    bot.process_new_updates([update])
-    return "OK"
+    try:
+        print_log("Webhook recibido")
+        json_str = request.get_data().decode('UTF-8')
+        print_log(f"Datos recibidos: {json_str}")
+        
+        update = telebot.types.Update.de_json(json_str)
+        bot.process_new_updates([update])
+        return jsonify({'status': 'ok'})
+    except Exception as e:
+        logging.error(f"Error en webhook: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
 
 @app.route('/set_webhook', methods=['GET'])
 def set_webhook():
-    """Configurar webhook para el bot"""
-    bot.remove_webhook()
-    webhook_url = f'https://acd8-187-190-190-71.ngrok-free.app/{TELEGRAM_TOKEN}'
-    bot.set_webhook(url=webhook_url)
-    return "Webhook configurado exitosamente"
+    try:
+        # Primero remover webhook existente
+        result = telegramBot.bot.remove_webhook()
+        print_log(f"Webhook removido: {result}")
+        
+        # Establecer nuevo webhook
+        result = telegramBot.bot.set_webhook(url=WEBHOOK_URL)
+        print_log(f"Webhook establecido: {result}")
+        
+        # Verificar webhook
+        webhook_info = telegramBot.bot.get_webhook_info()
+        print_log(f"Info del webhook: {webhook_info}")
+        
+        return jsonify({
+            'status': 'webhook set successfully',
+            'url': WEBHOOK_URL,
+            'webhook_info': {
+                'url': webhook_info.url,
+                'has_custom_certificate': webhook_info.has_custom_certificate,
+                'pending_update_count': webhook_info.pending_update_count
+            }
+        })
+    except Exception as e:
+        logging.error(f"Error setting webhook: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
 
+@app.route('/remove_webhook', methods=['GET'])
+def remove_webhook():
+    try:
+        result = telegramBot.bot.remove_webhook()
+        return jsonify({'status': 'webhook removed successfully', 'result': result})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+# CAMBIO 7: Corregir referencia a user_states
+@app.route('/bot_info', methods=['GET'])
+def bot_info():
+    try:
+        me = telegramBot.bot.get_me()
+        return jsonify({
+            'bot_name': me.first_name,
+            'username': me.username,
+            'active_users': len(telegramBot.user_states)  # Corregido
+        })
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+# CAMBIO 8: Corregir referencia a user_states en stats
+@app.route('/stats', methods=['GET'])
+def stats():
+    try:
+        return jsonify({
+            'active_conversations': len(telegramBot.user_states),
+            'states_breakdown': {
+                STATE_INICIO: sum(1 for state in telegramBot.user_states.values() if state == STATE_INICIO),
+                STATE_ESPERANDO_DETALLES: sum(1 for state in telegramBot.user_states.values() if state == STATE_ESPERANDO_DETALLES),
+                STATE_PROCESANDO_REPORTE: sum(1 for state in telegramBot.user_states.values() if state == STATE_PROCESANDO_REPORTE)
+            }
+        })
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+# CAMBIO 9: Endpoint para testing
+@app.route('/test', methods=['GET'])
+def test():
+    return jsonify({
+        'status': 'Bot is running',
+        'webhook_url': WEBHOOK_URL,
+        'timestamp': datetime.now().isoformat()
+    })
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=9696)
+    print("Bot iniciado...")
+    print(f"Webhook URL: {WEBHOOK_URL}")
+    print("Presiona Ctrl+C para detener el bot")
+    
+    # CAMBIO 10: Configurar Flask para producción
+    app.run(debug=False, host='0.0.0.0', port=9696, threaded=True)
